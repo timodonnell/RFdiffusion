@@ -454,6 +454,50 @@ class substrate_contacts(Potential):
             self.motif_frame = xyz[rand_idx[0],:4]
             self.motif_mapping = [(rand_idx, i) for i in range(4)]
 
+
+class drmsd(Potential):
+    def __init__(self, motif_pdb_str, hal_indices_str):
+        from rfdiffusion.inference.utils import parse_pdb
+
+        # Indices should be given as e.g. 10+11+12+14/30+31+32+33+38
+        # where the / separates the motifs
+        self.motif_indices = [
+            [int(x) for x in some.split("+")]
+            for some in hal_indices_str.split("/")
+        ]
+        for motif_indices in self.motif_indices:
+            np.testing.assert_equal(len(motif_indices), len(self.motif_indices[0]))
+
+        self.reference_pdb = parse_pdb(motif_pdb_str)
+        self.reference_xyz = torch.reshape(
+            torch.tensor(self.reference_pdb['xyz'][:, 0:3]), (-1, 3))
+        self.reference_distances = torch.cdist(
+            torch.tensor(self.reference_xyz),
+            torch.tensor(self.reference_xyz))
+        np.testing.assert_equal(
+            self.reference_pdb['xyz'].shape[0], len(self.motif_indices[0]))
+
+    def compute(self, xyz):
+        deviations = None
+        self.reference_distances = self.reference_distances.to(xyz.device)
+        for motif_indices in self.motif_indices:
+            # Get the corresponding indices from xyz (a torch tensor).
+            sub_xyz = torch.index_select(xyz, 0, torch.tensor(motif_indices))
+            sub_xyz = torch.index_select(sub_xyz, 1, torch.tensor([0, 1, 2]))
+            sub_xyz = torch.reshape(sub_xyz, (-1, 3))
+            motif_distances = torch.cdist(sub_xyz, sub_xyz)
+            squared_differences = (self.reference_distances - motif_distances)**2
+            motif_deviations = torch.mean(squared_differences)
+            #import ipdb ; ipdb.set_trace()
+            if deviations is None:
+                deviations = motif_deviations
+            else:
+                deviations += motif_deviations
+        potential = -torch.sqrt(deviations)
+        print("drmsd potential", potential)
+        return potential
+
+
 # Dictionary of types of potentials indexed by name of potential. Used by PotentialManager.
 # If you implement a new potential you must add it to this dictionary for it to be used by
 # the PotentialManager
@@ -464,7 +508,8 @@ implemented_potentials = { 'monomer_ROG':          monomer_ROG,
                            'interface_ncontacts':  interface_ncontacts,
                            'monomer_contacts':     monomer_contacts,
                            'olig_contacts':        olig_contacts,
-                           'substrate_contacts':    substrate_contacts}
+                           'substrate_contacts':   substrate_contacts,
+                           'drmsd':                drmsd,}
 
 require_binderlen      = { 'binder_ROG',
                            'binder_distance_ReLU',
